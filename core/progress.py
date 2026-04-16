@@ -142,6 +142,12 @@ class ProgressTracker:
         except Exception:
             pass
         try:
-            await self._bot.send_message(self._chat_id, text, parse_mode=_PM)
+            sent = await self._bot.send_message(self._chat_id, text, parse_mode=_PM)
+            if success:
+                # Auto-delete completion message after 30s
+                asyncio.get_event_loop().call_later(
+                    30, asyncio.ensure_future,
+                    self._bot.delete_messages(self._chat_id, [sent.id])
+                )
         except Exception:
             pass
