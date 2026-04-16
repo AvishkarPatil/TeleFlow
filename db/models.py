@@ -57,7 +57,7 @@ class UserPrefs:
             dest_channel_id=d.get("dest_channel_id"),
             dest_channel_title=d.get("dest_channel_title"),
             thumbnail_file_id=d.get("thumbnail_file_id"),
-            thumbnail_mode=d.get("thumbnail_mode", ThumbMode.ORIGINAL),
+            thumbnail_mode=d.get("thumbnail_mode", ThumbMode.DEFAULT).replace("original", ThumbMode.DEFAULT),
             filename_template=d.get("filename_template"),
             caption_template=d.get("caption_template"),
             caption_filters=d.get("caption_filters", []),
