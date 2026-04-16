@@ -333,8 +333,6 @@ async def _execute_single(task, bot, user_acc, prefs, dest_chat_id, user_chat_id
         success=True, error=None,
     ))
     await user_db.increment_task_stats(task.user_id, file_size)
-    # Always update progress to done after download+upload
-    await tracker.send_final_edit(success=True, elapsed=elapsed, file_size=file_size)
 
 
 async def execute(task: TaskDocument, bot: "Client", user_acc: Optional["Client"], reply_to_msg_id: int) -> None:
@@ -350,9 +348,13 @@ async def execute(task: TaskDocument, bot: "Client", user_acc: Optional["Client"
     if user_acc is None:
         raise TransferError("User session not configured. Set USER_SESSION_STRING.")
 
-    total = task.msg_id_end - task.msg_id_start + 1
+    original_start = task.msg_id_start
+    original_end = task.msg_id_end
+    total = original_end - original_start + 1
     done = 0
     errors = 0
+    last_file_size = 0
+    last_elapsed = 0.0
 
     status_msg = await bot.send_message(
         user_chat_id,
@@ -362,7 +364,7 @@ async def execute(task: TaskDocument, bot: "Client", user_acc: Optional["Client"
     await task_db.update_task(task.task_id, status_msg_id=status_msg.id, status_chat_id=user_chat_id)
     tracker = ProgressTracker(bot=bot, task=task, status_chat_id=user_chat_id, status_msg_id=status_msg.id)
 
-    for msg_id in range(task.msg_id_start, task.msg_id_end + 1):
+    for msg_id in range(original_start, original_end + 1):
         # Check if cancelled between messages
         latest = await task_db.get_task(task.task_id)
         if latest and latest.status == TaskStatus.CANCELLED:
