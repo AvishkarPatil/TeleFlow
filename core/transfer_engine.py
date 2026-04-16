@@ -365,7 +365,6 @@ async def execute(task: TaskDocument, bot: "Client", user_acc: Optional["Client"
         latest = await task_db.get_task(task.task_id)
         if latest and latest.status == TaskStatus.CANCELLED:
             log.info("transfer.cancelled_mid_range", task_id=task.task_id, at=msg_id)
-            from utils.temp import cleanup_stale_files
             cleanup_stale_files(task.task_id)
             try:
                 await bot.edit_message_text(
