@@ -64,7 +64,7 @@ async def get_all_active_tasks() -> List[TaskDocument]:
 
 async def mark_all_running_as_interrupted() -> int:
     result = await get_db()["tasks"].update_many(
-        {"status": TaskStatus.RUNNING},
+        {"status": {"$in": [TaskStatus.RUNNING, TaskStatus.QUEUED]}},
         {"$set": {
             "status": TaskStatus.INTERRUPTED,
             "completed_at": datetime.utcnow(),
