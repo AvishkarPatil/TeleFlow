@@ -23,9 +23,9 @@ class SourceType:
 
 
 class ThumbMode:
-    ORIGINAL = "original"   # use thumb from source
-    CUSTOM   = "custom"     # use user-uploaded thumb
-    NONE     = "none"       # send without thumb
+    DEFAULT = "default"   # use original thumb from source as-is
+    NONE    = "none"      # extract middle frame from video
+    CUSTOM  = "custom"    # use user-uploaded thumbnail
 
 
 @dataclass
@@ -33,10 +33,11 @@ class UserPrefs:
     dest_channel_id:    Optional[int]   = None
     dest_channel_title: Optional[str]   = None
     thumbnail_file_id:  Optional[str]   = None
-    thumbnail_mode:     str             = ThumbMode.ORIGINAL
-    filename_template:  Optional[str]   = None   # None = keep original
-    caption_template:   Optional[str]   = None   # None = keep original
+    thumbnail_mode:     str             = ThumbMode.DEFAULT
+    filename_template:  Optional[str]   = None
+    caption_template:   Optional[str]   = None
     caption_filters:    List[str]       = field(default_factory=list)
+    bot_mode:           bool            = False  # if True, bot tries copy first
 
     def to_dict(self) -> dict:
         return {
@@ -47,6 +48,7 @@ class UserPrefs:
             "filename_template":  self.filename_template,
             "caption_template":   self.caption_template,
             "caption_filters":    self.caption_filters,
+            "bot_mode":           self.bot_mode,
         }
 
     @classmethod
@@ -59,6 +61,7 @@ class UserPrefs:
             filename_template=d.get("filename_template"),
             caption_template=d.get("caption_template"),
             caption_filters=d.get("caption_filters", []),
+            bot_mode=d.get("bot_mode", False),
         )
 
 
@@ -82,6 +85,7 @@ class TaskDocument:
     retry_count: int = 0
     status_chat_id: Optional[int] = None
     status_msg_id: Optional[int] = None
+    user_chat_id: Optional[int] = None  # always the user's DM — for status messages
 
     def to_dict(self) -> dict:
         return {
@@ -103,6 +107,7 @@ class TaskDocument:
             "retry_count": self.retry_count,
             "status_chat_id": self.status_chat_id,
             "status_msg_id": self.status_msg_id,
+            "user_chat_id": self.user_chat_id,
         }
 
     @classmethod
@@ -126,6 +131,7 @@ class TaskDocument:
             retry_count=d.get("retry_count", 0),
             status_chat_id=d.get("status_chat_id"),
             status_msg_id=d.get("status_msg_id"),
+            user_chat_id=d.get("user_chat_id"),
         )
 
 

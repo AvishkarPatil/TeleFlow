@@ -17,9 +17,9 @@ _AWAITING: dict[int, str] = {}
 _PM = enums.ParseMode.HTML
 
 _THUMB_LABEL = {
-    ThumbMode.ORIGINAL: "Original",
-    ThumbMode.CUSTOM:   "Custom",
-    ThumbMode.NONE:     "None",
+    ThumbMode.DEFAULT: "Default",
+    ThumbMode.CUSTOM:  "Custom",
+    ThumbMode.NONE:    "None (mid-frame)",
 }
 
 
@@ -39,6 +39,7 @@ def _settings_main_kb() -> InlineKeyboardMarkup:
         [InlineKeyboardButton("🖼  ᴛʜᴜᴍʙɴᴀɪʟ",    callback_data="s:thumb")],
         [InlineKeyboardButton("📝  ꜰɪʟᴇɴᴀᴍᴇ",      callback_data="s:fname")],
         [InlineKeyboardButton("💬  ᴄᴀᴘᴛɪᴏɴ",       callback_data="s:caption")],
+        [InlineKeyboardButton("🤖  ʙᴏᴛ ᴍᴏᴅᴇ",       callback_data="s:botmode")],
         [InlineKeyboardButton("‹  ʙᴀᴄᴋ",           callback_data="back_start")],
     ])
 
@@ -60,8 +61,8 @@ def _thumb_kb(prefs: UserPrefs) -> InlineKeyboardMarkup:
     m = prefs.thumbnail_mode
     dot = lambda mode: "●" if m == mode else "○"
     rows = [[
-        InlineKeyboardButton(f"{dot(ThumbMode.ORIGINAL)}  ᴏʀɪɢɪɴᴀʟ", callback_data="s:thumb:original"),
-        InlineKeyboardButton(f"{dot(ThumbMode.NONE)}  ɴᴏɴᴇ",          callback_data="s:thumb:none"),
+        InlineKeyboardButton(f"{dot(ThumbMode.DEFAULT)}  ᴅᴇꜰᴀᴜʟᴛ", callback_data="s:thumb:default"),
+        InlineKeyboardButton(f"{dot(ThumbMode.NONE)}  ɴᴏɴᴇ",            callback_data="s:thumb:none"),
     ]]
     if prefs.thumbnail_file_id:
         rows.append([
@@ -120,6 +121,7 @@ async def _main_text(user_id: int) -> str:
               else "<i>Original</i>"
     filters_n = len(p.caption_filters)
     filters_val = f"<code>{filters_n} word{'s' if filters_n != 1 else ''}</code>" if filters_n else "<i>None</i>"
+    bot_mode = "<b>On</b>" if p.bot_mode else "<i>Off</i>"
 
     return (
         "<b>Settings</b>\n"
@@ -129,6 +131,7 @@ async def _main_text(user_id: int) -> str:
         f"•  <b>Filename :</b>     {fname}\n"
         f"•  <b>Caption :</b>      {caption}\n"
         f"•  <b>Filters :</b>      {filters_val}\n"
+        f"•  <b>Bot Mode :</b>     {bot_mode}\n"
         "\n"
         "<code>─────────────────────</code>\n"
         f"•  <b>Tasks :</b>  <code>{tasks_done}</code>   ·   <b>Data :</b>  <code>{data_saved}</code>"
@@ -157,9 +160,9 @@ def _dest_text(prefs: UserPrefs) -> str:
 
 def _thumb_text(prefs: UserPrefs) -> str:
     desc = {
-        ThumbMode.ORIGINAL: "Use the original thumbnail from the source.",
-        ThumbMode.CUSTOM:   "Use your uploaded custom thumbnail.",
-        ThumbMode.NONE:     "Send files without any thumbnail.",
+        ThumbMode.DEFAULT: "Keep the original thumbnail from the source.",
+        ThumbMode.NONE:    "Extract middle frame of video as thumbnail.",
+        ThumbMode.CUSTOM:  "Use your uploaded custom thumbnail.",
     }
     custom_status = "✓  Custom thumbnail saved." if prefs.thumbnail_file_id \
                     else "No custom thumbnail uploaded yet."
@@ -267,7 +270,7 @@ async def cb_s_thumb(_: object, cb: CallbackQuery) -> None:
     await _edit(cb, _thumb_text(prefs), reply_markup=_thumb_kb(prefs))
 
 
-@bot.on_callback_query(filters.regex(r"^s:thumb:(original|none|custom)$"))
+@bot.on_callback_query(filters.regex(r"^s:thumb:(default|none|custom)$"))
 async def cb_s_thumb_mode(_: object, cb: CallbackQuery) -> None:
     mode = cb.matches[0].group(1)
     prefs = await user_db.get_prefs(cb.from_user.id)
@@ -275,7 +278,7 @@ async def cb_s_thumb_mode(_: object, cb: CallbackQuery) -> None:
         await cb.answer("Upload a thumbnail first.", show_alert=True)
         return
     await user_db.update_prefs(cb.from_user.id, thumbnail_mode=mode)
-    await cb.answer(f"Mode set to {mode}.")
+    await cb.answer(f"Thumbnail mode set to {mode}.")
     prefs = await user_db.get_prefs(cb.from_user.id)
     await _edit(cb, _thumb_text(prefs), reply_markup=_thumb_kb(prefs))
 
@@ -295,7 +298,7 @@ async def cb_s_thumb_upload(_: object, cb: CallbackQuery) -> None:
 @bot.on_callback_query(filters.regex(r"^s:thumb:remove$"))
 async def cb_s_thumb_remove(_: object, cb: CallbackQuery) -> None:
     await cb.answer()
-    await user_db.update_prefs(cb.from_user.id, thumbnail_file_id=None, thumbnail_mode=ThumbMode.ORIGINAL)
+    await user_db.update_prefs(cb.from_user.id, thumbnail_file_id=None, thumbnail_mode=ThumbMode.DEFAULT)
     prefs = await user_db.get_prefs(cb.from_user.id)
     await _edit(cb, _thumb_text(prefs), reply_markup=_thumb_kb(prefs))
 
@@ -378,6 +381,16 @@ async def cb_s_caption_clearfilters(_: object, cb: CallbackQuery) -> None:
 
 
 # ── Input handler ─────────────────────────────────────────────────────────────
+
+
+@bot.on_callback_query(filters.regex(r"^s:botmode$"))
+async def cb_s_botmode(_: object, cb: CallbackQuery) -> None:
+    await cb.answer()
+    prefs = await user_db.get_prefs(cb.from_user.id)
+    new_val = not prefs.bot_mode
+    await user_db.update_prefs(cb.from_user.id, bot_mode=new_val)
+    await cb.answer(f"Bot mode {'on' if new_val else 'off'}.")
+    await _edit(cb, await _main_text(cb.from_user.id), reply_markup=_settings_main_kb())
 
 
 @bot.on_message(sudo & (filters.text | filters.photo) & ~filters.command([

@@ -26,7 +26,6 @@ async def handle_text(_: object, message: Message) -> None:
     if not uid:
         return
 
-    # Yield to settings flow if active
     if uid in _SETTINGS_AWAITING:
         return
 
@@ -95,13 +94,15 @@ async def _handle_link(message: Message, url: str) -> None:
 
     uid = message.from_user.id
     prefs = await user_db.get_prefs(uid)
-    dest_chat_id = prefs.dest_channel_id or message.chat.id
+    user_chat_id = message.chat.id
+    dest_chat_id = prefs.dest_channel_id or user_chat_id
 
     try:
         task_ids = await queue.enqueue(
             parsed=parsed,
             user_id=uid,
             dest_chat_id=dest_chat_id,
+            user_chat_id=user_chat_id,
             reply_to_msg_id=message.id,
         )
     except RuntimeError as e:

@@ -58,6 +58,7 @@ class TaskQueue:
         parsed: ParsedLink,
         user_id: int,
         dest_chat_id: int,
+        user_chat_id: int,
         reply_to_msg_id: int,
     ) -> List[str]:
         active = await task_db.count_active_tasks_for_user(user_id)
@@ -78,6 +79,7 @@ class TaskQueue:
                 msg_id_start=msg_id,
                 msg_id_end=msg_id,
                 status_chat_id=dest_chat_id,
+                user_chat_id=user_chat_id,
                 created_at=datetime.utcnow(),
             )
             await task_db.create_task(task)
