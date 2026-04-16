@@ -101,6 +101,9 @@ class TaskQueue:
         if task.status in (TaskStatus.DONE, TaskStatus.FAILED, TaskStatus.INTERRUPTED):
             return False
         await task_db.set_task_status(task_id, TaskStatus.CANCELLED)
+        # Clean up any temp files for this task
+        from utils.temp import cleanup_stale_files
+        cleanup_stale_files(task_id)
         log.info("task.cancelled", task_id=task_id, by_user=user_id)
         return True
 

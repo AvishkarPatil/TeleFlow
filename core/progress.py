@@ -5,6 +5,7 @@ import time
 from typing import Optional, TYPE_CHECKING
 
 from pyrogram import enums
+from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from utils.formatting import format_bytes, format_speed, format_eta, format_percent, format_duration, truncate
 
@@ -26,6 +27,12 @@ def _bar(current: int, total: int, width: int = 10) -> str:
         return "□" * width
     filled = int(width * current / total)
     return "■" * filled + "□" * (width - filled)
+
+
+def _cancel_kb(task_id: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("✕  ᴄᴀɴᴄᴇʟ", callback_data=f"cancel:{task_id}")],
+    ])
 
 
 class ProgressTracker:
@@ -69,7 +76,9 @@ class ProgressTracker:
     async def _do_edit(self) -> None:
         try:
             await self._bot.edit_message_text(
-                self._chat_id, self._msg_id, self._render(), parse_mode=_PM
+                self._chat_id, self._msg_id, self._render(),
+                parse_mode=_PM,
+                reply_markup=_cancel_kb(self._task.task_id),
             )
         except Exception:
             pass
@@ -128,8 +137,11 @@ class ProgressTracker:
             )
 
         try:
+            # Remove cancel button on completion
             await self._bot.edit_message_text(
-                self._chat_id, self._msg_id, text, parse_mode=_PM
+                self._chat_id, self._msg_id, text,
+                parse_mode=_PM,
+                reply_markup=None,
             )
         except Exception:
             pass

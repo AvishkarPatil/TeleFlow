@@ -361,7 +361,22 @@ async def execute(task: TaskDocument, bot: "Client", user_acc: Optional["Client"
     tracker = ProgressTracker(bot=bot, task=task, status_chat_id=user_chat_id, status_msg_id=status_msg.id)
 
     for msg_id in range(task.msg_id_start, task.msg_id_end + 1):
-        task.msg_id_start = msg_id  # update for progress display
+        # Check if cancelled between messages
+        latest = await task_db.get_task(task.task_id)
+        if latest and latest.status == TaskStatus.CANCELLED:
+            log.info("transfer.cancelled_mid_range", task_id=task.task_id, at=msg_id)
+            from utils.temp import cleanup_stale_files
+            cleanup_stale_files(task.task_id)
+            try:
+                await bot.edit_message_text(
+                    user_chat_id, status_msg.id,
+                    "<b><i>Task cancelled.</i></b>",
+                    parse_mode=enums.ParseMode.HTML,
+                )
+            except Exception:
+                pass
+            return
+        task.msg_id_start = msg_id
         try:
             await _execute_single(task, bot, user_acc, prefs, dest_chat_id, user_chat_id, tracker, reply_to_msg_id, msg_id)
             done += 1
