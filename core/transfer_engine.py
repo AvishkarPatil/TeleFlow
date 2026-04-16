@@ -214,18 +214,31 @@ async def _upload(task, bot, user_acc, source_msg, kind, file_path, tracker, rep
 
 
 async def _download_and_upload(task, bot, user_acc, source_msg, kind, tracker, reply_to_msg_id, prefs):
-    async with managed_tempfile(task.task_id, _kind_to_suffix(kind)) as tmp_path:
+    media_obj = get_file_ref(source_msg)
+    original_name = getattr(media_obj, "file_name", None)
+    suffix = _kind_to_suffix(kind)
+    # Name the temp file with original name so pyrotgfork uses it during upload
+    file_label = original_name if original_name else f"{task.task_id}{suffix}"
+    async with managed_tempfile(task.task_id, suffix) as tmp_path:
+        final_path = tmp_path.parent / file_label
         log.info("transfer.downloading", task_id=task.task_id, kind=kind.value, size=format_bytes(task.file_size or 0))
         await with_retry_call(
             user_acc.download_media, source_msg,
-            file_name=str(tmp_path), progress=tracker.on_download,
+            file_name=str(final_path), progress=tracker.on_download,
             task_id=task.task_id,
         )
-        if not tmp_path.exists() or tmp_path.stat().st_size == 0:
+        if not final_path.exists() or final_path.stat().st_size == 0:
             raise TransferError("Download failed — file is empty. Try again.")
         await task_db.update_task(task.task_id, msg_id_current=task.msg_id_start)
         log.info("transfer.uploading", task_id=task.task_id, kind=kind.value)
-        await _upload(task, bot, user_acc, source_msg, kind, tmp_path, tracker, reply_to_msg_id, prefs)
+        try:
+            await _upload(task, bot, user_acc, source_msg, kind, final_path, tracker, reply_to_msg_id, prefs)
+        finally:
+            try:
+                if final_path.exists():
+                    final_path.unlink()
+            except OSError:
+                pass
 
 
 async def _finalise(task, tracker, start_time, file_size, success, error_msg=None):
@@ -275,11 +288,11 @@ async def _execute_single(task, bot, user_acc, prefs, dest_chat_id, user_chat_id
             )
         return
 
-    # Restriction cache — probed once per source chat
+    # Restriction cache — probed once per source chat using raw IDs (avoids message.empty bug)
     cache_key = task.source_chat
     if cache_key not in _restriction_cache:
         try:
-            await with_retry_call(bot.copy_message, dest_chat_id, source_msg.chat.id, source_msg.id, task_id=task.task_id)
+            await bot.copy_message(dest_chat_id, source_msg.chat.id, source_msg.id)
             _restriction_cache[cache_key] = False
             await user_db.increment_task_stats(task.user_id, file_size)
             return
@@ -292,14 +305,14 @@ async def _execute_single(task, bot, user_acc, prefs, dest_chat_id, user_chat_id
     if not _restriction_cache[cache_key]:
         if prefs.bot_mode:
             try:
-                await with_retry_call(bot.copy_message, dest_chat_id, source_msg.chat.id, source_msg.id, task_id=task.task_id)
+                await bot.copy_message(dest_chat_id, source_msg.chat.id, source_msg.id)
                 await user_db.increment_task_stats(task.user_id, file_size)
                 return
             except Exception:
                 pass
         else:
             try:
-                await with_retry_call(source_msg.copy, dest_chat_id, task_id=task.task_id)
+                await source_msg.copy(dest_chat_id)
                 await user_db.increment_task_stats(task.user_id, file_size)
                 return
             except Exception:

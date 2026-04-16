@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import functools
 from typing import Callable, TypeVar, Awaitable, Any
 
 from logging_config import get_logger
@@ -13,6 +12,7 @@ _MAX_FLOOD_WAIT = 300
 _NON_RETRYABLE = (
     "MediaEmpty", "MessageIdInvalid", "ChannelInvalid",
     "ChannelPrivate", "ChatForbidden", "UserNotParticipant", "FilerefUpgradeNeeded",
+    "ValueError", "ChatForwardsRestricted",
 )
 
 
@@ -49,7 +49,7 @@ async def with_retry_call(
         except Exception as e:
             err_name = type(e).__name__
             if err_name in _NON_RETRYABLE:
-                log.error("non_retryable_error", task_id=task_id, error=err_name, func=func.__name__)
+                log.debug("non_retryable_error", task_id=task_id, error=err_name, func=func.__name__)
                 raise
 
             last_error = e
