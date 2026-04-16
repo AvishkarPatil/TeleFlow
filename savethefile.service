@@ -1,0 +1,26 @@
+[Unit]
+Description=SaveTheFile v2 — Telegram restricted media retrieval bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=<your_username>
+WorkingDirectory=/opt/savethefile
+ExecStart=/opt/savethefile/.venv/bin/python main.py
+Restart=on-failure
+RestartSec=10s
+
+# Give workers 130 seconds to drain before force-kill
+TimeoutStopSec=130
+
+# Environment
+EnvironmentFile=/opt/savethefile/.env
+
+# Logs to journald
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=savethefile
+
+[Install]
+WantedBy=multi-user.target
