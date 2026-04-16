@@ -333,6 +333,8 @@ async def _execute_single(task, bot, user_acc, prefs, dest_chat_id, user_chat_id
         success=True, error=None,
     ))
     await user_db.increment_task_stats(task.user_id, file_size)
+    # Always update progress to done after download+upload
+    await tracker.send_final_edit(success=True, elapsed=elapsed, file_size=file_size)
 
 
 async def execute(task: TaskDocument, bot: "Client", user_acc: Optional["Client"], reply_to_msg_id: int) -> None:
