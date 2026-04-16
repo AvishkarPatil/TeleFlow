@@ -136,12 +136,12 @@ class ProgressTracker:
                 f"┗  <b><i>{error_msg or 'Unknown error'}</i></b>"
             )
 
+        # Delete progress message and send fresh final — avoids MessageNotModified stuck state
         try:
-            # Remove cancel button on completion
-            await self._bot.edit_message_text(
-                self._chat_id, self._msg_id, text,
-                parse_mode=_PM,
-                reply_markup=None,
-            )
+            await self._bot.delete_messages(self._chat_id, [self._msg_id])
+        except Exception:
+            pass
+        try:
+            await self._bot.send_message(self._chat_id, text, parse_mode=_PM)
         except Exception:
             pass
