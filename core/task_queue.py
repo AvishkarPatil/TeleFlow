@@ -62,38 +62,37 @@ class TaskQueue:
         reply_to_msg_id: int,
     ) -> List[str]:
         active = await task_db.count_active_tasks_for_user(user_id)
-        if active + parsed.message_count > settings.max_tasks_per_user:
+        if active >= settings.max_tasks_per_user:
             raise RuntimeError(
                 f"Too many active tasks. You have {active} running; "
                 f"limit is {settings.max_tasks_per_user}."
             )
 
-        task_ids: List[str] = []
-        for msg_id in range(parsed.msg_id_start, parsed.msg_id_end + 1):
-            task = TaskDocument(
-                task_id=uuid.uuid4().hex[:8].upper(),
-                user_id=user_id,
-                status=TaskStatus.QUEUED,
-                source_chat=parsed.source_chat,
-                source_type=parsed.source_type,
-                msg_id_start=msg_id,
-                msg_id_end=msg_id,
-                status_chat_id=dest_chat_id,
-                user_chat_id=user_chat_id,
-                created_at=datetime.utcnow(),
-            )
-            await task_db.create_task(task)
-            await self._queue.put(TransferJob(task=task, reply_to_msg_id=reply_to_msg_id))
-            task_ids.append(task.task_id)
+        task = TaskDocument(
+            task_id=uuid.uuid4().hex[:8].upper(),
+            user_id=user_id,
+            status=TaskStatus.QUEUED,
+            source_chat=parsed.source_chat,
+            source_type=parsed.source_type,
+            msg_id_start=parsed.msg_id_start,
+            msg_id_end=parsed.msg_id_end,
+            status_chat_id=dest_chat_id,
+            user_chat_id=user_chat_id,
+            created_at=datetime.utcnow(),
+        )
+        await task_db.create_task(task)
+        await self._queue.put(TransferJob(task=task, reply_to_msg_id=reply_to_msg_id))
 
         log.info(
             "task_queue.enqueued",
-            count=len(task_ids),
+            task_id=task.task_id,
             user_id=user_id,
             source=parsed.source_chat,
+            range=f"{parsed.msg_id_start}-{parsed.msg_id_end}",
+            count=parsed.message_count,
             queue_depth=self._queue.qsize(),
         )
-        return task_ids
+        return [task.task_id]
 
     async def cancel_task(self, task_id: str, user_id: int) -> bool:
         task = await task_db.get_task(task_id)

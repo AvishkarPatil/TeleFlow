@@ -9,8 +9,15 @@ from datetime import date
 from pathlib import Path
 from typing import Optional, TYPE_CHECKING
 
+from pyrogram import enums
 from pyrogram.errors import ChatForwardsRestricted, ChannelPrivate, UserNotParticipant
-from pyrogram.types import InputReplyToMessage
+try:
+    from pyrogram.types import InputReplyToMessage as _ReplyType
+except ImportError:
+    from pyrogram.types import ReplyParameters as _ReplyType
+
+def _reply_to(msg_id: int):
+    return _ReplyType(message_id=msg_id)
 
 from core.media_type import MediaKind, detect, has_media, get_file_ref
 from core.progress import ProgressTracker
@@ -163,7 +170,7 @@ async def _upload(task, bot, user_acc, source_msg, kind, file_path, tracker, rep
     file_name = _apply_filename(getattr(media_obj, "file_name", None), prefs, task)
     video_path = str(file_path) if kind == MediaKind.VIDEO else None
     thumb = await _resolve_thumb(prefs, media_obj, user_acc, task.task_id, video_path=video_path)
-    common = dict(reply_parameters=InputReplyToMessage(message_id=reply_to_msg_id), progress=tracker.on_upload)
+    common = dict(reply_parameters=_reply_to(reply_to_msg_id), progress=tracker.on_upload)
 
     try:
         if kind == MediaKind.PHOTO:
@@ -195,7 +202,7 @@ async def _upload(task, bot, user_acc, source_msg, kind, file_path, tracker, rep
         elif kind == MediaKind.STICKER:
             await with_retry_call(bot.send_sticker, chat_id, sticker=str(file_path),
                 task_id=task.task_id,
-                reply_parameters=InputReplyToMessage(message_id=reply_to_msg_id))
+                reply_parameters=_reply_to(reply_to_msg_id))
         else:
             raise TransferError(f"Unsupported media kind: {kind.value}")
     finally:
@@ -243,6 +250,78 @@ async def _finalise(task, tracker, start_time, file_size, success, error_msg=Non
              duration=f"{elapsed:.1f}s", size=format_bytes(file_size))
 
 
+async def _execute_single(task, bot, user_acc, prefs, dest_chat_id, user_chat_id, tracker, reply_to_msg_id, msg_id):
+    source_msg = await _fetch_via_user(user_acc, task.source_chat, msg_id, task.task_id)
+    if source_msg is None:
+        raise TransferError(f"Message {msg_id} not found or inaccessible.")
+
+    kind = detect(source_msg)
+    media_obj = get_file_ref(source_msg)
+    file_size = getattr(media_obj, "file_size", 0) or 0
+    file_name = getattr(media_obj, "file_name", None)
+
+    task.media_type = kind.value
+    task.file_size = file_size
+    task.file_name = file_name
+    await task_db.update_task(task.task_id, media_type=kind.value, file_size=file_size, file_name=file_name)
+
+    # Text-only
+    if not has_media(source_msg):
+        if source_msg.text or source_msg.caption:
+            await bot.send_message(
+                dest_chat_id,
+                source_msg.text or source_msg.caption,
+                entities=source_msg.entities or source_msg.caption_entities,
+            )
+        return
+
+    # Restriction cache — probed once per source chat
+    cache_key = task.source_chat
+    if cache_key not in _restriction_cache:
+        try:
+            await with_retry_call(bot.copy_message, dest_chat_id, source_msg.chat.id, source_msg.id, task_id=task.task_id)
+            _restriction_cache[cache_key] = False
+            await user_db.increment_task_stats(task.user_id, file_size)
+            return
+        except ChatForwardsRestricted:
+            _restriction_cache[cache_key] = True
+            log.info("transfer.restricted_cached", source=cache_key)
+        except Exception:
+            _restriction_cache[cache_key] = True
+
+    if not _restriction_cache[cache_key]:
+        if prefs.bot_mode:
+            try:
+                await with_retry_call(bot.copy_message, dest_chat_id, source_msg.chat.id, source_msg.id, task_id=task.task_id)
+                await user_db.increment_task_stats(task.user_id, file_size)
+                return
+            except Exception:
+                pass
+        else:
+            try:
+                await with_retry_call(source_msg.copy, dest_chat_id, task_id=task.task_id)
+                await user_db.increment_task_stats(task.user_id, file_size)
+                return
+            except Exception:
+                pass
+
+    # Restricted — download + upload
+    task.status_chat_id = dest_chat_id
+    start = time.monotonic()
+    await _download_and_upload(task, bot, user_acc, source_msg, kind, tracker, reply_to_msg_id, prefs)
+    task.status_chat_id = user_chat_id
+    elapsed = time.monotonic() - start
+    avg_bps = file_size / elapsed if elapsed > 0 else 0.0
+    await log_db.log_transfer(TransferLogDocument(
+        task_id=task.task_id, user_id=task.user_id,
+        source_chat=task.source_chat, msg_id=msg_id,
+        media_type=kind.value, file_name=file_name,
+        file_size=file_size, duration_seconds=elapsed, avg_speed_bps=avg_bps,
+        success=True, error=None,
+    ))
+    await user_db.increment_task_stats(task.user_id, file_size)
+
+
 async def execute(task: TaskDocument, bot: "Client", user_acc: Optional["Client"], reply_to_msg_id: int) -> None:
     start_time = time.monotonic()
     cleanup_stale_files(task.task_id)
@@ -253,112 +332,48 @@ async def execute(task: TaskDocument, bot: "Client", user_acc: Optional["Client"
 
     prefs = await user_db.get_prefs(task.user_id)
 
-    # Always fetch via user session — fastest, full access, no wasted bot attempt
     if user_acc is None:
         raise TransferError("User session not configured. Set USER_SESSION_STRING.")
 
-    source_msg = await _fetch_via_user(user_acc, task.source_chat, task.msg_id_start, task.task_id)
+    total = task.msg_id_end - task.msg_id_start + 1
+    done = 0
+    errors = 0
 
     status_msg = await bot.send_message(
-        user_chat_id, "⏳  Fetching…",
-        reply_parameters=InputReplyToMessage(message_id=reply_to_msg_id),
+        user_chat_id,
+        f"⏳  Starting{'  ·  ' + str(total) + ' messages' if total > 1 else ''}…",
+        reply_parameters=_reply_to(reply_to_msg_id),
     )
     await task_db.update_task(task.task_id, status_msg_id=status_msg.id, status_chat_id=user_chat_id)
     tracker = ProgressTracker(bot=bot, task=task, status_chat_id=user_chat_id, status_msg_id=status_msg.id)
 
-    error_msg: Optional[str] = None
-    success = False
-    transferred_bytes = 0
+    for msg_id in range(task.msg_id_start, task.msg_id_end + 1):
+        task.msg_id_start = msg_id  # update for progress display
+        try:
+            await _execute_single(task, bot, user_acc, prefs, dest_chat_id, user_chat_id, tracker, reply_to_msg_id, msg_id)
+            done += 1
+        except Exception as e:
+            errors += 1
+            log.warning("transfer.msg_failed", task_id=task.task_id, msg_id=msg_id, error=str(e))
 
-    try:
-        if source_msg is None:
-            raise TransferError(f"Message {task.msg_id_start} not found or inaccessible.")
+    # Final status
+    elapsed = time.monotonic() - start_time
+    if total > 1:
+        try:
+            await bot.edit_message_text(
+                user_chat_id, status_msg.id,
+                f"<b>Done</b>  ·  {done}/{total} transferred"
+                + (f"  ·  {errors} failed" if errors else ""),
+                parse_mode=enums.ParseMode.HTML,
+            )
+        except Exception:
+            pass
 
-        kind = detect(source_msg)
-        media_obj = get_file_ref(source_msg)
-        file_size = getattr(media_obj, "file_size", 0) or 0
-        file_name = getattr(media_obj, "file_name", None)
-
-        await task_db.update_task(task.task_id, media_type=kind.value, file_size=file_size, file_name=file_name)
-        task.media_type = kind.value
-        task.file_size = file_size
-        task.file_name = file_name
-        transferred_bytes = file_size
-
-        # Text-only message
-        if not has_media(source_msg):
-            if source_msg.text or source_msg.caption:
-                await bot.send_message(
-                    dest_chat_id,
-                    source_msg.text or source_msg.caption,
-                    entities=source_msg.entities or source_msg.caption_entities,
-                )
-            await bot.delete_messages(user_chat_id, [status_msg.id])
-            await task_db.set_task_status(task.task_id, TaskStatus.DONE)
-            success = True
-            return
-
-        # Check restriction cache — probed once per source chat, reused for entire range
-        cache_key = task.source_chat
-        if cache_key not in _restriction_cache:
-            # Probe: try copy_message to detect restriction
-            try:
-                await with_retry_call(
-                    bot.copy_message,
-                    dest_chat_id, source_msg.chat.id, source_msg.id,
-                    task_id=task.task_id,
-                )
-                _restriction_cache[cache_key] = False  # not restricted
-                success = True
-                await bot.delete_messages(user_chat_id, [status_msg.id])
-                await _finalise(task, tracker, start_time, file_size, success=True)
-                return
-            except ChatForwardsRestricted:
-                _restriction_cache[cache_key] = True  # restricted — cache it
-                log.info("transfer.restricted_cached", source=cache_key)
-            except Exception:
-                _restriction_cache[cache_key] = True  # assume restricted on any failure
-
-        if not _restriction_cache[cache_key]:
-            # Not restricted — bot mode: try copy first
-            if prefs.bot_mode:
-                try:
-                    await with_retry_call(
-                        bot.copy_message,
-                        dest_chat_id, source_msg.chat.id, source_msg.id,
-                        task_id=task.task_id,
-                    )
-                    success = True
-                    await bot.delete_messages(user_chat_id, [status_msg.id])
-                    await _finalise(task, tracker, start_time, file_size, success=True)
-                    return
-                except Exception:
-                    pass
-            else:
-                # Default: user session copy (no forward tag)
-                try:
-                    await with_retry_call(source_msg.copy, dest_chat_id, task_id=task.task_id)
-                    success = True
-                    await bot.delete_messages(user_chat_id, [status_msg.id])
-                    await _finalise(task, tracker, start_time, file_size, success=True)
-                    return
-                except Exception:
-                    pass
-
-        # Restricted — go straight to download/upload, no copy attempt
-        task.status_chat_id = dest_chat_id
-        await _download_and_upload(task, bot, user_acc, source_msg, kind, tracker, reply_to_msg_id, prefs)
-        success = True
-
-    except TransferError as e:
-        error_msg = str(e)
-        log.error("transfer.failed", task_id=task.task_id, error=error_msg)
-    except MaxRetriesExceeded as e:
-        error_msg = f"Failed after {e.attempts} retries: {e.last_error}"
-        log.error("transfer.max_retries", task_id=task.task_id, error=error_msg)
-    except Exception as e:
-        error_msg = f"{type(e).__name__}: {e}"
-        log.exception("transfer.unexpected_error", task_id=task.task_id)
-    finally:
-        task.status_chat_id = user_chat_id
-        await _finalise(task, tracker, start_time, transferred_bytes, success, error_msg)
+    await task_db.set_task_status(
+        task.task_id,
+        TaskStatus.DONE if errors == 0 else TaskStatus.FAILED,
+        msg_id_current=task.msg_id_end,
+    )
+    if done > 0:
+        await user_db.increment_task_stats(task.user_id, 0)
+    log.info("transfer.range_done", task_id=task.task_id, done=done, errors=errors, elapsed=f"{elapsed:.1f}s")

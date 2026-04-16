@@ -25,7 +25,7 @@ class Settings(BaseSettings):
     sudo_users: str = ""
 
     max_workers: int = 5
-    max_tasks_per_user: int = 3
+    max_tasks_per_user: int = 10
     temp_dir: str = os.path.join(tempfile.gettempdir(), "savethefile")
 
     log_level: str = "INFO"
