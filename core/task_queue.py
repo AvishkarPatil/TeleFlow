@@ -22,6 +22,7 @@ log = get_logger(__name__)
 class TransferJob:
     task: TaskDocument
     reply_to_msg_id: int
+    queued_msg_id: Optional[int] = None
     cancelled: bool = False
 
 
@@ -60,6 +61,7 @@ class TaskQueue:
         dest_chat_id: int,
         user_chat_id: int,
         reply_to_msg_id: int,
+        queued_msg_id: Optional[int] = None,
     ) -> List[str]:
         active = await task_db.count_active_tasks_for_user(user_id)
         if active >= settings.max_tasks_per_user:
@@ -81,7 +83,7 @@ class TaskQueue:
             created_at=datetime.utcnow(),
         )
         await task_db.create_task(task)
-        await self._queue.put(TransferJob(task=task, reply_to_msg_id=reply_to_msg_id))
+        await self._queue.put(TransferJob(task=task, reply_to_msg_id=reply_to_msg_id, queued_msg_id=queued_msg_id))
 
         log.info(
             "task_queue.enqueued",
@@ -140,6 +142,12 @@ class TaskQueue:
             task_id=task.task_id,
             source=f"{task.source_chat}/{task.msg_id_start}",
         )
+        # Delete the "Queued" message now that we're starting
+        if job.queued_msg_id and task.user_chat_id:
+            try:
+                await self._bot.delete_messages(task.user_chat_id, [job.queued_msg_id])
+            except Exception:
+                pass
         from core.transfer_engine import execute
         await execute(task=latest, bot=self._bot, user_acc=self._user_acc, reply_to_msg_id=job.reply_to_msg_id)
 

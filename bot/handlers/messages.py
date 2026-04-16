@@ -97,6 +97,21 @@ async def _handle_link(message: Message, url: str) -> None:
     user_chat_id = message.chat.id
     dest_chat_id = prefs.dest_channel_id or user_chat_id
 
+    # Send queued message first so we have its ID
+    dest_note = f"\n<i>→ {prefs.dest_channel_title}</i>" if prefs.dest_channel_id else ""
+    count = parsed.message_count
+
+    if count == 1:
+        queued_msg = await message.reply(
+            f"<b><i>↻  Queued</i></b>{dest_note}",
+            parse_mode=_PM,
+        )
+    else:
+        queued_msg = await message.reply(
+            f"<b><i>↻  Queued  ·  {count} messages</i></b>{dest_note}",
+            parse_mode=_PM,
+        )
+
     try:
         task_ids = await queue.enqueue(
             parsed=parsed,
@@ -104,19 +119,21 @@ async def _handle_link(message: Message, url: str) -> None:
             dest_chat_id=dest_chat_id,
             user_chat_id=user_chat_id,
             reply_to_msg_id=message.id,
+            queued_msg_id=queued_msg.id,
         )
     except RuntimeError as e:
+        await queued_msg.delete()
         await message.reply(f"<b><i>⚠️  {e}</i></b>", parse_mode=_PM)
         return
 
-    count = len(task_ids)
-    dest_note = f"\n<i>→ {prefs.dest_channel_title}</i>" if prefs.dest_channel_id else ""
-
-    if count == 1:
-        await message.reply(f"<b><i>↻  Queued</i></b>  ·  <code>{task_ids[0]}</code>{dest_note}", parse_mode=_PM)
-    else:
-        ids = "  ".join(f"<code>{tid}</code>" for tid in task_ids[:5])
-        more = f"  <i>+{count - 5} more</i>" if count > 5 else ""
-        await message.reply(f"<b><i>↻  Queued {count} tasks</i></b>{dest_note}\n{ids}{more}", parse_mode=_PM)
+    # Edit to show task ID
+    try:
+        if count == 1:
+            await queued_msg.edit_text(
+                f"<b><i>↻  Queued</i></b>  ·  <code>{task_ids[0]}</code>{dest_note}",
+                parse_mode=_PM,
+            )
+    except Exception:
+        pass
 
     log.info("tasks.enqueued", count=count, source=f"{parsed.source_chat}/{parsed.msg_id_start}", user=uid)
