@@ -47,8 +47,11 @@ class ProgressTracker:
         self._phase_start = time.monotonic()
         self._last_edit: float = 0.0
         self._lock = asyncio.Lock()
+        self.cancelled: bool = False
 
     async def on_download(self, current: int, total: int) -> None:
+        if self.cancelled:
+            raise asyncio.CancelledError()
         self.current, self.total = current, total
         if self.phase != "download":
             self.phase = "download"
@@ -56,6 +59,8 @@ class ProgressTracker:
         await self._maybe_edit()
 
     async def on_upload(self, current: int, total: int) -> None:
+        if self.cancelled:
+            raise asyncio.CancelledError()
         self.current, self.total = current, total
         if self.phase != "upload":
             self.phase = "upload"

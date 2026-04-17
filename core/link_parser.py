@@ -7,6 +7,7 @@ from typing import Optional
 from db.models import SourceType
 
 _RANGE_RE = re.compile(r"^(\d+)\s*-\s*(\d+)$")
+_MSG_RE = re.compile(r"^(\d+(-\d+)?)$")
 
 
 @dataclass(frozen=True)
@@ -27,10 +28,14 @@ class ParsedLink:
         return self.msg_id_end - self.msg_id_start + 1
 
 
+def _is_msg_part(s: str) -> bool:
+    s = s.replace("?single", "").strip()
+    return bool(_RANGE_RE.match(s) or s.isdigit())
+
+
 def parse(url: str) -> Optional[ParsedLink]:
     url = url.strip()
 
-    # Invite links
     if "https://t.me/+" in url or "https://t.me/joinchat/" in url:
         invite_hash = (
             url.split("https://t.me/+")[-1]
@@ -46,15 +51,15 @@ def parse(url: str) -> Optional[ParsedLink]:
             raw_url=url,
         )
 
-    # Private channel: t.me/c/<chat_id>/<msg_id>
-    # Topic variant:   t.me/c/<chat_id>/<topic_id>/<msg_id>
+    # Private: t.me/c/<chat_id>/<msg_id>
+    # Topic:   t.me/c/<chat_id>/<topic_id>/<msg_id_or_range>
     if "https://t.me/c/" in url:
         parts = url.split("/")
         if len(parts) < 6:
             return None
         raw_chat_id = parts[4]
-        # 7 parts means topic link — use parts[6] as msg_id
-        if len(parts) >= 7 and parts[6].replace("?single", "").strip().isdigit():
+        # If 7+ parts and parts[6] looks like a message ID or range → topic link
+        if len(parts) >= 7 and _is_msg_part(parts[6]):
             raw_msg = parts[6].replace("?single", "").strip()
         else:
             raw_msg = parts[5].replace("?single", "").strip()
@@ -91,15 +96,14 @@ def parse(url: str) -> Optional[ParsedLink]:
             raw_url=url,
         )
 
-    # Public channel: t.me/<username>/<msg_id>
-    # Topic variant:  t.me/<username>/<topic_id>/<msg_id>
+    # Public: t.me/<username>/<msg_id>
+    # Topic:  t.me/<username>/<topic_id>/<msg_id_or_range>
     if "https://t.me/" in url:
         parts = url.split("/")
         if len(parts) < 5:
             return None
         username = parts[3].strip()
-        # 6 parts means topic link — use parts[5] as msg_id
-        if len(parts) >= 6 and parts[5].replace("?single", "").strip().isdigit():
+        if len(parts) >= 6 and _is_msg_part(parts[5]):
             raw_msg = parts[5].replace("?single", "").strip()
         else:
             raw_msg = parts[4].replace("?single", "").strip()

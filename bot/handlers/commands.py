@@ -9,7 +9,6 @@ from bot.filters import sudo
 from bot.keyboards import (
     start_keyboard, help_keyboard,
     system_keyboard, system_back_keyboard, tasks_keyboard,
-    confirm_cancel_keyboard,
 )
 from config import settings
 from core.task_queue import queue
@@ -187,6 +186,15 @@ async def cmd_cancel(_: object, message: Message) -> None:
         return
     task_id = args[0].upper()
     cancelled = await queue.cancel_task(task_id, message.from_user.id)
+    if not cancelled:
+        # Try direct DB cancel for running tasks
+        from db import tasks as task_db_direct
+        task = await task_db_direct.get_task(task_id)
+        if task and task.user_id == message.from_user.id:
+            from db.models import TaskStatus as TS
+            if task.status not in (TS.DONE, TS.FAILED, TS.CANCELLED, TS.INTERRUPTED):
+                await task_db_direct.set_task_status(task_id, TS.CANCELLED)
+                cancelled = True
     if cancelled:
         await message.reply(f"<b><i>Task <code>{task_id}</code> cancelled.</i></b>", parse_mode=_PM)
     else:
@@ -275,16 +283,19 @@ async def cb_back_start(_: object, cb: CallbackQuery) -> None:
 @bot.on_callback_query(filters.regex(r"^cancel:(.+)$"))
 async def cb_cancel(_: object, cb: CallbackQuery) -> None:
     task_id = cb.matches[0].group(1)
-    await cb.answer()
-    await cb.message.edit_reply_markup(confirm_cancel_keyboard(task_id))
-
-
-@bot.on_callback_query(filters.regex(r"^cancel_confirm:(.+)$"))
-async def cb_cancel_confirm(_: object, cb: CallbackQuery) -> None:
-    task_id = cb.matches[0].group(1)
     cancelled = await queue.cancel_task(task_id, cb.from_user.id)
-    await cb.answer("Cancelled." if cancelled else "Already finished.")
-    await cb.message.edit_reply_markup(None)
+    if cancelled:
+        await cb.answer("Cancelled.", show_alert=True)
+        try:
+            await cb.message.edit_reply_markup(None)
+        except Exception:
+            pass
+    else:
+        await cb.answer("Already finished.", show_alert=True)
+        try:
+            await cb.message.edit_reply_markup(None)
+        except Exception:
+            pass
 
 
 @bot.on_callback_query(filters.regex(r"^dismiss$"))
