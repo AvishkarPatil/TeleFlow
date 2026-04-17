@@ -27,7 +27,7 @@ from db import users as user_db
 from db.models import TaskDocument, TaskStatus, TransferLogDocument, SourceType, ThumbMode, UserPrefs
 from utils.retry import with_retry_call, MaxRetriesExceeded
 from utils.temp import managed_tempfile, cleanup_stale_files, _ensure_temp_dir
-from utils.formatting import format_bytes
+from utils.formatting import format_bytes, format_duration
 from logging_config import get_logger
 
 if TYPE_CHECKING:
@@ -335,6 +335,20 @@ async def _execute_single(task, bot, user_acc, prefs, dest_chat_id, user_chat_id
     await user_db.increment_task_stats(task.user_id, file_size)
 
 
+async def _scan_total(user_acc: "Client", source_chat: str, start: int, end: int, result: list) -> None:
+    chat = _parse_chat(source_chat)
+    count = 0
+    for batch_start in range(start, end + 1, 200):
+        ids = list(range(batch_start, min(batch_start + 200, end + 1)))
+        try:
+            msgs = await user_acc.get_messages(chat, ids)
+            count += sum(1 for m in msgs if m and not m.empty)
+            result[0] = count
+        except Exception:
+            pass
+    result[1] = True
+
+
 async def execute(task: TaskDocument, bot: "Client", user_acc: Optional["Client"], reply_to_msg_id: int) -> None:
     start_time = time.monotonic()
     cleanup_stale_files(task.task_id)
@@ -342,7 +356,6 @@ async def execute(task: TaskDocument, bot: "Client", user_acc: Optional["Client"
 
     user_chat_id = task.user_chat_id or task.status_chat_id
     dest_chat_id = task.status_chat_id
-
     prefs = await user_db.get_prefs(task.user_id)
 
     if user_acc is None:
@@ -350,22 +363,25 @@ async def execute(task: TaskDocument, bot: "Client", user_acc: Optional["Client"
 
     original_start = task.msg_id_start
     original_end = task.msg_id_end
-    total = original_end - original_start + 1
+    is_range = original_end > original_start
     done = 0
     errors = 0
-    last_file_size = 0
-    last_elapsed = 0.0
+    total_bytes = 0
 
     status_msg = await bot.send_message(
         user_chat_id,
-        f"⏳  Starting{'  ·  ' + str(total) + ' messages' if total > 1 else ''}…",
+        "Starting...",
         reply_parameters=_reply_to(reply_to_msg_id),
     )
     await task_db.update_task(task.task_id, status_msg_id=status_msg.id, status_chat_id=user_chat_id)
     tracker = ProgressTracker(bot=bot, task=task, status_chat_id=user_chat_id, status_msg_id=status_msg.id)
 
+    # Background scan: result[0]=running count, result[1]=True when done
+    scan_result = [0, False]
+    if is_range:
+        asyncio.ensure_future(_scan_total(user_acc, task.source_chat, original_start, original_end, scan_result))
+
     for msg_id in range(original_start, original_end + 1):
-        # Check if cancelled between messages
         latest = await task_db.get_task(task.task_id)
         if latest and latest.status == TaskStatus.CANCELLED:
             log.info("transfer.cancelled_mid_range", task_id=task.task_id, at=msg_id)
@@ -379,31 +395,51 @@ async def execute(task: TaskDocument, bot: "Client", user_acc: Optional["Client"
             except Exception:
                 pass
             return
+
         task.msg_id_start = msg_id
+
+        if is_range and done > 0:
+            try:
+                total_known = scan_result[0]
+                suffix = "" if scan_result[1] else "+"
+                await bot.edit_message_text(
+                    user_chat_id, status_msg.id,
+                    f"<b>{done}/{total_known}{suffix}</b> transferred...",
+                    parse_mode=enums.ParseMode.HTML,
+                )
+            except Exception:
+                pass
+
         try:
             await _execute_single(task, bot, user_acc, prefs, dest_chat_id, user_chat_id, tracker, reply_to_msg_id, msg_id)
             done += 1
+            total_bytes += task.file_size or 0
         except Exception as e:
             errors += 1
             log.warning("transfer.msg_failed", task_id=task.task_id, msg_id=msg_id, error=str(e))
 
-    # Final status
     elapsed = time.monotonic() - start_time
-    if total > 1:
+
+    if is_range:
+        summary = (
+            f"<b>Done</b>  {done} transferred\n"
+            f"Data: {format_bytes(total_bytes)}  Duration: {format_duration(elapsed)}"
+            + (f"  {errors} errors" if errors else "")
+        )
         try:
             await bot.edit_message_text(
-                user_chat_id, status_msg.id,
-                f"<b>Done</b>  ·  {done}/{total} transferred"
-                + (f"  ·  {errors} failed" if errors else ""),
+                user_chat_id, status_msg.id, summary,
                 parse_mode=enums.ParseMode.HTML,
             )
         except Exception:
             pass
+    else:
+        await tracker.send_final_edit(success=errors == 0, elapsed=elapsed, file_size=task.file_size or 0)
 
     await task_db.set_task_status(
         task.task_id,
         TaskStatus.DONE if errors == 0 else TaskStatus.FAILED,
-        msg_id_current=task.msg_id_end,
+        msg_id_current=original_end,
     )
     if done > 0:
         await user_db.increment_task_stats(task.user_id, 0)
