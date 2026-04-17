@@ -266,7 +266,7 @@ async def _finalise(task, tracker, start_time, file_size, success, error_msg=Non
 async def _execute_single(task, bot, user_acc, prefs, dest_chat_id, user_chat_id, tracker, reply_to_msg_id, msg_id):
     source_msg = await _fetch_via_user(user_acc, task.source_chat, msg_id, task.task_id)
     if source_msg is None:
-        raise TransferError(f"Message {msg_id} not found or inaccessible.")
+        return  # message doesn't exist — skip silently
 
     kind = detect(source_msg)
     media_obj = get_file_ref(source_msg)
